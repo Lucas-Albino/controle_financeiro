@@ -1,10 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community'
 import { AgGridReact } from 'ag-grid-react'
-import { useNavigate, useOutletContext } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Buttons, Card, InputForm } from '../../components/index.js'
+import {
+    destroy,
+    list as list,
+} from '../../services/categories-service.js'
 
 ModuleRegistry.registerModules([AllCommunityModule])
+
+const categoriesQueryKey = ['categories', 'list']
 
 const gridTheme = themeQuartz.withParams({
     accentColor: '#0284c7',
@@ -24,10 +31,44 @@ const statusLabels = {
     inactive: 'Inativa',
 }
 
+function getErrorMessage(error) {
+    return error?.response?.data?.message ?? error?.message
+}
+
+async function fetchCategories(signal) {
+    const { data: response } = await list({ signal })
+    const categories = Array.isArray(response) ? response : response?.data
+
+    return Array.isArray(categories) ? categories : []
+}
+
 function CategoriesPage() {
     const navigate = useNavigate()
-    const { categories, deleteCategory } = useOutletContext()
+    const queryClient = useQueryClient()
     const [search, setSearch] = useState('')
+
+    const categoriesQuery = useQuery({
+        queryKey: categoriesQueryKey,
+        queryFn: ({ signal }) => fetchCategories(signal),
+    })
+
+    const deleteMutation = useMutation({
+        mutationFn: destroy,
+        onSuccess: () =>
+            queryClient.invalidateQueries({ queryKey: categoriesQueryKey }),
+    })
+
+    const handleDelete = useCallback(
+        (category) => {
+            if (!window.confirm(`Deseja excluir a categoria “${category.name}”?`)) {
+                return
+            }
+
+            deleteMutation.reset()
+            deleteMutation.mutate(category.id)
+        },
+        [deleteMutation],
+    )
 
     const columnDefs = useMemo(
         () => [
@@ -59,36 +100,40 @@ function CategoriesPage() {
                 headerName: 'Ações',
                 width: 205,
                 sortable: false,
-                cellRenderer: ({ data }) => (
-                    <div className="flex h-full items-center gap-2">
-                        <Buttons
-                            variant="warning"
-                            className="min-h-8 px-3 py-1 text-xs"
-                            onClick={() => navigate(`/categories/${data.id}/edit`)}
-                        >
-                            Editar
-                        </Buttons>
-                        <Buttons
-                            variant="danger"
-                            className="min-h-8 px-3 py-1 text-xs"
-                            onClick={() => {
-                                if (
-                                    window.confirm(
-                                        `Deseja excluir a categoria “${data.name}”?`,
-                                    )
-                                ) {
-                                    deleteCategory(data.id)
+                cellRenderer: ({ data }) => {
+                    const isDeleting =
+                        deleteMutation.isPending &&
+                        deleteMutation.variables === data.id
+
+                    return (
+                        <div className="flex h-full items-center gap-2">
+                            <Buttons
+                                variant="warning"
+                                className="min-h-8 px-3 py-1 text-xs"
+                                onClick={() =>
+                                    navigate(`/categories/${data.id}/edit`)
                                 }
-                            }}
-                        >
-                            Excluir
-                        </Buttons>
-                    </div>
-                ),
+                            >
+                                Editar
+                            </Buttons>
+                            <Buttons
+                                variant="danger"
+                                className="min-h-8 px-3 py-1 text-xs"
+                                disabled={isDeleting}
+                                onClick={() => handleDelete(data)}
+                            >
+                                {isDeleting ? 'Excluindo...' : 'Excluir'}
+                            </Buttons>
+                        </div>
+                    )
+                },
             },
         ],
-        [deleteCategory, navigate],
+        [deleteMutation.isPending, deleteMutation.variables, handleDelete, navigate],
     )
+
+    const loadError = categoriesQuery.error? getErrorMessage(categoriesQuery.error): ''
+    const operationError = deleteMutation.error? getErrorMessage(deleteMutation.error): ''
 
     return (
         <div className="mx-auto w-full space-y-6">
@@ -112,6 +157,12 @@ function CategoriesPage() {
 
             <Card title="Lista de categorias" contentClassName="space-y-5 p-0">
                 <div className="px-5 pt-5">
+                    {(loadError || operationError) && (
+                        <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+                            {loadError || operationError}
+                        </p>
+                    )}
+
                     <InputForm
                         label="Pesquisar categoria"
                         type="search"
@@ -125,9 +176,10 @@ function CategoriesPage() {
                     <div className="h-[calc(100vh-323px)] min-h-80 min-w-[760px]">
                         <AgGridReact
                             theme={gridTheme}
-                            rowData={categories}
+                            rowData={categoriesQuery.data ?? []}
                             columnDefs={columnDefs}
                             quickFilterText={search}
+                            loading={categoriesQuery.isLoading}
                             domLayout="normal"
                             rowHeight={56}
                             pagination
